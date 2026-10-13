@@ -1,0 +1,11 @@
+{
+    "KPackageStructure": "Plasma/LookAndFeel",
+    "KPlugin": {
+        "Category": "",
+        "Description": "Breeze Dark Zehra OS",
+        "Id": "com.zehraos.breezedarkzehra.desktop",
+        "License": "GPLv2+",
+        "Name": "Breeze Dark Zehra OS",
+        "Website": "https://github.com/zehra-os"
+    }
+}

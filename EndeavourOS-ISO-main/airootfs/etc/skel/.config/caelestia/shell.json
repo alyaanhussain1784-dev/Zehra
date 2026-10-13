@@ -1,0 +1,122 @@
+{
+  "$schema": "https://raw.githubusercontent.com/caelestia-dots/shell/main/schema/shell.json",
+  "general": {
+    "mediaGifSpeedAdjustment": 1.0,
+    "enableAnimations": true,
+    "reduceMotion": false,
+    "cornerRadius": 12,
+    "uiScale": 1.0
+  },
+  "theme": {
+    "scheme": "tonalSpot",
+    "variant": "dynamic",
+    "source": "wallpaper",
+    "contrast": 0.0,
+    "respectSystemTheme": false,
+    "forceDark": false,
+    "primaryColor": null,
+    "secondaryColor": null,
+    "tertiaryColor": null,
+    "neutralColor": null,
+    "neutralVariantColor": null
+  },
+  "services": {
+    "visualiserBars": 64,
+    "cavaConfig": {
+      "enabled": true,
+      "bars": 64,
+      "framerate": 60,
+      "channels": "stereo",
+      "autosens": true,
+      "noise_reduction": 0.7,
+      "lower_cut_off_freq": 50,
+      "higher_cut_off_freq": 14000
+    },
+    "beatTracker": {
+      "enabled": true,
+      "sensitivity": 1.5
+    }
+  },
+  "dashboard": {
+    "mediaWidth": 380,
+    "mediaTabWidth": 760,
+    "mediaTabHeight": 420,
+    "mediaSectionWidth": 180,
+    "mediaCoverArtSize": 200,
+    "mediaProgressThickness": 4,
+    "mediaProgressSweep": 270,
+    "mediaUpdateInterval": 500,
+    "showVisualiser": true,
+    "visualiserStyle": "bars"
+  },
+  "bar": {
+    "height": 42,
+    "margin": 8,
+    "cornerRadius": 12,
+    "blur": true,
+    "opacity": 0.85,
+    "position": "top",
+    "autoHide": false,
+    "showWorkspaces": true,
+    "showActiveWindow": true,
+    "showSystemTray": true,
+    "showClock": true,
+    "showBattery": true,
+    "showNetwork": true,
+    "showAudio": true,
+    "showBluetooth": true
+  },
+  "drawers": {
+    "appDrawer": {
+      "enabled": true,
+      "blur": true,
+      "opacity": 0.9,
+      "cornerRadius": 16
+    },
+    "quickSettings": {
+      "enabled": true,
+      "blur": true,
+      "opacity": 0.9,
+      "cornerRadius": 16
+    },
+    "mediaDrawer": {
+      "enabled": true,
+      "blur": true,
+      "opacity": 0.9,
+      "cornerRadius": 16,
+      "visualiserStyle": "technical"
+    }
+  },
+  "lock": {
+    "enabled": true,
+    "blur": true,
+    "opacity": 0.85,
+    "cornerRadius": 16,
+    "showMedia": true,
+    "showClock": true,
+    "showDate": true,
+    "mediaVisualiser": "bars"
+  },
+  "background": {
+    "wallpaperDir": "~/Pictures/Wallpapers",
+    "wallpaperMode": "fill",
+    "transitionDuration": 500,
+    "blur": 0,
+    "dim": 0.1
+  },
+  "notifications": {
+    "enabled": true,
+    "position": "top-right",
+    "maxVisible": 5,
+    "timeout": 5000,
+    "blur": true,
+    "opacity": 0.9,
+    "cornerRadius": 12
+  },
+  "idle": {
+    "enabled": true,
+    "lockTimeout": 300,
+    "dpmsTimeout": 600,
+    "suspendTimeout": 0
+  }
+}

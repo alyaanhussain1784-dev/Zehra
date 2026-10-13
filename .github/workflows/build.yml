@@ -1,0 +1,299 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.23'
+  QT_VERSION: '6.8'
+  # Discord webhook URL - add as repository secret: DISCORD_WEBHOOK_URL
+
+jobs:
+  # Build all Go modules
+  go-build:
+    name: Go Build
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --user root
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Go and dependencies
+        run: |
+          pacman -Sy --noconfirm go gcc pkg-config dbus glib2 git base-devel
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build zehra-cli (with vendor)
+        run: |
+          cd ryoku/cli
+          go build -mod=vendor -o zehra .
+          echo "zehra-cli built successfully"
+
+      - name: Build zehra-hub (with vendor)
+        run: |
+          cd ryoku/hub/backend
+          go build -mod=vendor -o zehra-hub .
+          echo "zehra-hub built successfully"
+
+      - name: Build zehra-shell-installer
+        run: |
+          cd ryoku-shell-installer
+          go build -o zehra-shell-install .
+          echo "zehra-shell-installer built successfully"
+
+      - name: Build zehra-wm (with vendor)
+        run: |
+          cd ryoku/wm
+          go build -mod=vendor -o zehra-wm .
+          echo "zehra-wm built successfully"
+
+      - name: Build zehra-i18n
+        run: |
+          cd ryoku/i18n
+          go build -o zehra-i18n .
+          echo "zehra-i18n built successfully"
+
+      - name: Build zehra-shell-ipc (with vendor)
+        run: |
+          cd ryoku/shell/ipc
+          go build -mod=vendor -o zehra-shell-ipc .
+          echo "zehra-shell-ipc built successfully"
+
+      - name: Build zehra-palette-bridge
+        run: |
+          cd ryoku/palette-bridge
+          go build -o zehra-palette-bridge .
+          echo "zehra-palette-bridge built successfully"
+
+      - name: Build zehra-rashin-backend (with vendor)
+        run: |
+          cd ryoku/rashin/backend
+          go build -mod=vendor -o zehra-rashin-backend .
+          echo "zehra-rashin-backend built successfully"
+
+      - name: Build zevra-vm-fetch
+        run: |
+          cd ryoku/apps/ryovm/fetch
+          go build -o zevra-vm-fetch .
+          echo "zevra-vm-fetch built successfully"
+
+      - name: Build zevra-vm-remote
+        run: |
+          cd ryoku/apps/ryovm/remote
+          go build -o zevra-vm-remote .
+          echo "zevra-vm-remote built successfully"
+
+      - name: Build zevra-vm-mon
+        run: |
+          cd ryoku/apps/ryovm/mon
+          go build -o zevra-vm-mon .
+          echo "zevra-vm-mon built successfully"
+
+      - name: Build zehra-store-backend
+        run: |
+          cd ryoku/apps/ryostore/backend
+          go build -o zehra-store-backend .
+          echo "zehra-store-backend built successfully"
+
+      - name: Run Go tests
+        run: |
+          cd ryoku/cli && go test -mod=vendor ./...
+          cd ryoku/hub/backend && go test -mod=vendor ./...
+          cd ryoku/wm && go test -mod=vendor ./...
+          cd ryoku/i18n && go test ./...
+          cd ryoku/shell/ipc && go test -mod=vendor ./...
+          cd ryoku/rashin/backend && go test -mod=vendor ./...
+          cd ryoku/apps/ryovm/fetch && go test ./...
+          cd ryoku/apps/ryovm/remote && go test ./...
+          cd ryoku/apps/ryovm/mon && go test ./...
+          cd ryoku/apps/ryostore/backend && go test ./...
+        continue-on-error: true
+
+      - name: Build installation TUI
+        run: |
+          cd installation/tui
+          go build -o installation-tui .
+          echo "installation-tui built successfully"
+
+      - name: Upload Go binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-binaries
+          path: |
+            ryoku/cli/zehra
+            ryoku/hub/backend/zehra-hub
+            ryoku-shell-installer/zehra-shell-install
+            ryoku/wm/zehra-wm
+            ryoku/i18n/zehra-i18n
+            ryoku/shell/ipc/zehra-shell-ipc
+            ryoku/palette-bridge/zehra-palette-bridge
+            ryoku/rashin/backend/zehra-rashin-backend
+            ryoku/apps/ryovm/fetch/zevra-vm-fetch
+            ryoku/apps/ryovm/remote/zevra-vm-remote
+            ryoku/apps/ryovm/mon/zevra-vm-mon
+            ryoku/apps/ryostore/backend/zehra-store-backend
+            installation/tui/installation-tui
+          retention-days: 7
+
+  # Build Qt QML plugin (Ryoku.Blobs)
+  qt-plugin:
+    name: Qt Plugin (Ryoku.Blobs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Qt and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            qt6-shadertools-dev \
+            qt6-multimedia-dev \
+            cmake \
+            ninja-build \
+            g++
+
+      - name: Configure Qt plugin build
+        run: |
+          cd ryoku/shell/plugin
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Qt plugin
+        run: |
+          cd ryoku/shell/plugin
+          cmake --build build
+
+      - name: Verify plugin output
+        run: |
+          cd ryoku/shell/plugin
+          ls -la build/qml/Ryoku/Blobs/
+          test -f build/qml/Ryoku/Blobs/libryoku-blobs.so
+          test -f build/qml/Ryoku/Blobs/qmldir
+
+      - name: Upload Qt plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-plugin
+          path: ryoku/shell/plugin/build/qml/Ryoku/Blobs/
+          retention-days: 7
+
+  # Lint QML files
+  qml-lint:
+    name: QML Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Qt QML tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev qt6-declarative-dev qt6-tools-dev
+
+      - name: Lint QML files
+        run: |
+          # Find all QML files and run qmllint
+          find ryoku -name "*.qml" -type f | while read -r file; do
+            if command -v qmllint >/dev/null 2>&1; then
+              qmllint "$file" || true
+            else
+              echo "qmllint not available, skipping $file"
+            fi
+          done
+        continue-on-error: true
+
+  # Check shell scripts
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck on all shell scripts
+        run: |
+          find . -name "*.sh" -type f ! -path "./.git/*" ! -path "./vendor/*" | while read -r file; do
+            echo "Checking $file..."
+            shellcheck "$file" || true
+          done
+        continue-on-error: true
+
+  # Verify Go formatting
+  go-fmt:
+    name: Go Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check Go formatting
+        run: |
+          go_fmt_issues=0
+          for dir in ryoku/cli ryoku/hub/backend ryoku/wm ryoku/i18n ryoku/shell/ipc ryoku/palette-bridge ryoku/rashin/backend ryoku/apps/ryovm/fetch ryoku/apps/ryovm/remote ryoku/apps/ryovm/mon ryoku/apps/ryostore/backend installation/tui ryoku-shell-installer; do
+            if [ -d "$dir" ]; then
+              cd "$dir"
+              if [ -n "$(gofmt -l .)" ]; then
+                echo "Formatting issues in $dir:"
+                gofmt -l .
+                go_fmt_issues=1
+              fi
+              cd - > /dev/null
+            fi
+          done
+          if [ $go_fmt_issues -eq 1 ]; then
+            echo "Go formatting issues found. Run 'gofmt -w' to fix."
+            exit 1
+          fi
+          echo "All Go files are properly formatted"
+
+  # Build summary
+  build-summary:
+    name: Build Summary
+    needs: [go-build, qt-plugin, qml-lint, shellcheck, go-fmt]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Print build status
+        run: |
+          echo "Build Summary:"
+          echo "Go Build: ${{ needs.go-build.result }}"
+          echo "Qt Plugin: ${{ needs.qt-plugin.result }}"
+          echo "QML Lint: ${{ needs.qml-lint.result }}"
+          echo "Shellcheck: ${{ needs.shellcheck.result }}"
+          echo "Go Format: ${{ needs.go-fmt.result }}"
+
+      - name: Fail if any required job failed
+        if: |
+          needs.go-build.result != 'success' ||
+          needs.qt-plugin.result != 'success' ||
+          needs.go-fmt.result != 'success'
+        run: |
+          echo "Required build steps failed!"
+          exit 1

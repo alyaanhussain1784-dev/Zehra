@@ -1,0 +1,25 @@
+# Maintainer: Zehra OS <info@zehra-os.org>
+
+pkgname='endeavouros-skel-liveuser'
+pkgver=2.0
+pkgrel=1
+pkgdesc='Liveuser specific skel setup for Celestia Shell Zehra OS'
+arch=('any')
+url='https://github.com/zehra-os'
+license=('GPL3')
+source=()
+
+package() {
+
+    # Clone file structure
+    cp -r --no-preserve=ownership "${srcdir}/"* "${pkgdir}"
+
+    # Find all scripts
+    readarray -d '' scripts < <(find "${pkgdir}/etc/skel" -type f \( -iname "*.sh" -o -iname "*.bash" \) -print0)
+
+    # Make scripts executable
+    for script in "${scripts[@]}";
+    do
+        [[ -f ${script} ]] && chmod +x "${script}"
+    done
+}
