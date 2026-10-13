@@ -289,7 +289,8 @@ jobs:
       - name: 'Execute ISO Build in Privileged Container'
         # This runs the entire mkarchiso pipeline inside an isolated,
         # privileged Arch Linux container. The profile directory is mounted
-        # read-only, output directory is mounted for artifact retrieval.
+        # read-only at /repo, output directory is mounted at /out (separate path
+        # to avoid read-only mount conflict), work dir at /work.
         run: |
           set -euo pipefail
 
@@ -304,18 +305,20 @@ jobs:
           echo "  Starting ISO Build in Container"
           echo "========================================"
           echo "Work Dir: ${{ env.CONTAINER_WORK_DIR }}"
-          echo "Out Dir: ${{ env.CONTAINER_OUT_DIR }}"
+          echo "Out Dir: ${{ env.CONTAINER_OUT_DIR }} (mounted at /out in container)"
           echo "Verbose: ${VERBOSE_FLAG}"
           echo "Mode: ${BUILD_MODE}"
           echo "========================================"
 
-          # The container runs as root (privileged) with the profile mounted at /repo
-          # and output at /repo/out (mapped to host ${{ env.CONTAINER_OUT_DIR }})
+          # The container runs as root (privileged) with:
+          # - Profile mounted read-only at /repo
+          # - Output mounted at /out (NOT under /repo to avoid RO mount conflict)
+          # - Work dir mounted at /work
           docker run \
             --rm \
             --privileged \
             --volume "${{ github.workspace }}/${{ env.PROFILE_DIR }}:${{ env.REPO_MOUNT }}:ro" \
-            --volume "${{ env.CONTAINER_OUT_DIR }}:${{ env.REPO_MOUNT }}/out" \
+            --volume "${{ env.CONTAINER_OUT_DIR }}:/out" \
             --volume "${{ env.CONTAINER_WORK_DIR }}:${{ env.CONTAINER_WORK_DIR }}" \
             --workdir "${{ env.REPO_MOUNT }}" \
             --env MAKEFLAGS="${{ env.MAKEFLAGS }}" \
@@ -327,10 +330,10 @@ jobs:
 
               echo '=== Container Environment ===' 
               cat /etc/os-release
-              echo 'Kernel:' $(uname -r)
-              echo 'CPU cores:' $(nproc)
-              echo 'Memory:' $(free -h | grep Mem | awk '{print \$2}')
-              echo 'Disk:' $(df -h / | tail -1)
+              echo 'Kernel:' \$(uname -r)
+              echo 'CPU cores:' \$(nproc)
+              echo 'Memory:' \$(free -h | grep Mem | awk '{print \$2}')
+              echo 'Disk:' \$(df -h / | tail -1)
               echo '================================='
 
               echo '=== Installing Build Dependencies ==='
@@ -382,7 +385,7 @@ jobs:
               echo '=== Starting mkarchiso Build ==='
               echo 'Profile: .'
               echo 'Work dir: ${{ env.CONTAINER_WORK_DIR }}'
-              echo 'Out dir: ${{ env.REPO_MOUNT }}/out'
+              echo 'Out dir: /out'
               echo 'Verbose: ${VERBOSE_FLAG}'
 
               # Execute the custom mkarchiso (modified for Zehra OS)
@@ -393,7 +396,7 @@ jobs:
               # 4. Runs run_before_squashfs.sh (chroot operations)
               # 5. Creates squashfs
               # 6. Generates ISO with syslinux + systemd-boot
-              ./mkarchiso ${VERBOSE_FLAG} -w \"${{ env.CONTAINER_WORK_DIR }}\" -o \"${{ env.REPO_MOUNT }}/out\" .
+              ./mkarchiso ${VERBOSE_FLAG} -w \"${{ env.CONTAINER_WORK_DIR }}\" -o \"/out\" .
 
               echo '=== Build Completed Successfully ==='
             "
