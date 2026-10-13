@@ -1,0 +1,540 @@
+# Zehra OS - Production-Grade ISO Build Workflow
+# ===============================================
+# This workflow builds the Zehra OS live ISO using a privileged Arch Linux
+# Docker container on GitHub Actions runners. It is optimized for speed,
+# reliability, and artifact traceability.
+#
+# Repository Structure Expectations:
+#   - Profile directory: ./EndeavourOS-ISO-main/
+#   - Custom mkarchiso:  ./EndeavourOS-ISO-main/mkarchiso (modified for Zehra OS)
+#   - Package list:      ./EndeavourOS-ISO-main/packages.x86_64
+#   - Pacman config:     ./EndeavourOS-ISO-main/pacman.conf
+#   - Profile def:       ./EndeavourOS-ISO-main/profiledef.sh
+#   - Prepare hooks:     ./EndeavourOS-ISO-main/prepare.sh, prepare_auto.sh
+#   - Chroot hooks:      ./EndeavourOS-ISO-main/run_before_squashfs.sh
+#   - Airootfs overlay:  ./EndeavourOS-ISO-main/airootfs/
+#   - Boot configs:      ./EndeavourOS-ISO-main/syslinux/, ./EndeavourOS-ISO-main/efiboot/
+#
+# Key Variables Referenced from Repository:
+#   - iso_name, iso_label, iso_publisher, iso_application from profiledef.sh
+#   - Package dependencies from packages.x86_64 (340+ packages including
+#     hyprland, caelestia-shell deps, libreoffice-fresh, vlc, kdenlive,
+#     blender, inkscape, gimp, docker, flatpak, fastfetch, btop, nautilus)
+#   - EndeavourOS repo config from pacman.conf ([endeavouros], [core], [extra], [multilib])
+#   - run_before_squashfs.sh executes chroot operations for liveuser setup,
+#     keyring init, mirror ranking, lockscreen build, wallpaper install, etc.
+
+name: 'Zehra OS ISO Build'
+
+on:
+  # Manual trigger from GitHub Actions UI (single-click compilation)
+  workflow_dispatch:
+    inputs:
+      clean_workspace:
+        description: 'Clean Docker work directory before build (fresh build)'
+        type: boolean
+        default: true
+        required: false
+      verbose_logging:
+        description: 'Enable verbose mkarchiso output (-v flag)'
+        type: boolean
+        default: true
+        required: false
+      build_mode:
+        description: 'Build mode configuration'
+        type: choice
+        options:
+          - 'iso'          # Standard live ISO (default)
+          - 'netboot'      # Netboot artifacts only (if supported)
+        default: 'iso'
+        required: false
+
+  # Optional: Auto-build on tag push for release automation
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+      - master
+
+  # Optional: PR validation (dry-run, no artifact upload)
+  pull_request:
+    branches:
+      - main
+      - master
+    types: [opened, synchronize, reopened]
+
+# Concurrency control: cancel in-progress runs on same ref (except manual)
+concurrency:
+  group: 'zehra-os-iso-${{ github.ref }}'
+  cancel-in-progress: true
+
+# Global environment variables for the workflow
+env:
+  # Repository paths
+  PROFILE_DIR: 'EndeavourOS-ISO-main'
+  DOCKER_IMAGE: 'archlinux:latest'
+  CONTAINER_WORK_DIR: '/work'
+  CONTAINER_OUT_DIR: '/out'
+  REPO_MOUNT: '/repo'
+
+  # Build tuning
+  MAKEFLAGS: '-j$(nproc)'
+  COMPRESSION_THREADS: '$(nproc)'
+
+jobs:
+  # ================================================================
+  # PRE-FLIGHT: Disk Space Optimization & Environment Validation
+  # ================================================================
+  preflight:
+    name: 'Pre-flight: Runner Cleanup & Validation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      free_space_gb: ${{ steps.disk_space.outputs.free_gb }}
+    steps:
+      - name: 'Checkout repository (shallow for speed)'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: 'Aggressive Runner Disk Cleanup'
+        # GitHub ubuntu-latest runners come pre-loaded with ~40GB of tooling
+        # we don't need. This frees critical space for the ISO build (~15-20GB).
+        run: |
+          set -euo pipefail
+          echo "=== Pre-cleanup disk usage ==="
+          df -h /
+
+          # Remove heavy pre-installed toolchains (saves ~25-30GB)
+          echo "Removing Android SDK..."
+          sudo rm -rf /usr/local/lib/android /opt/android-sdk* 2>/dev/null || true
+
+          echo "Removing .NET runtimes..."
+          sudo rm -rf /usr/share/dotnet /opt/hostedtoolcache/dotnet 2>/dev/null || true
+
+          echo "Removing Haskell/GHC..."
+          sudo rm -rf /opt/ghc* /usr/local/bin/ghc* /usr/local/bin/cabal 2>/dev/null || true
+
+          echo "Removing Rust toolchain..."
+          sudo rm -rf /usr/local/rust /opt/rust* ~/.cargo 2>/dev/null || true
+
+          echo "Removing Google Chrome..."
+          sudo rm -rf /opt/google/chrome 2>/dev/null || true
+
+          echo "Removing Firefox..."
+          sudo rm -rf /usr/lib/firefox 2>/dev/null || true
+
+          echo "Removing Azure CLI..."
+          sudo rm -rf /opt/az /usr/local/bin/az 2>/dev/null || true
+
+          echo "Removing PowerShell..."
+          sudo rm -rf /opt/microsoft/powershell /usr/bin/pwsh 2>/dev/null || true
+
+          echo "Removing Julia..."
+          sudo rm -rf /opt/julia* 2>/dev/null || true
+
+          echo "Removing Kotlin..."
+          sudo rm -rf /opt/kotlin* 2>/dev/null || true
+
+          echo "Removing Swift..."
+          sudo rm -rf /usr/share/swift /opt/swift* 2>/dev/null || true
+
+          echo "Removing Heroku CLI..."
+          sudo rm -rf /usr/local/lib/heroku /usr/local/bin/heroku 2>/dev/null || true
+
+          echo "Removing Packer..."
+          sudo rm -rf /usr/local/bin/packer 2>/dev/null || true
+
+          echo "Removing Terraform..."
+          sudo rm -rf /usr/local/bin/terraform 2>/dev/null || true
+
+          echo "Removing Vagrant..."
+          sudo rm -rf /opt/vagrant /usr/local/bin/vagrant 2>/dev/null || true
+
+          echo "Removing Mono..."
+          sudo rm -rf /usr/lib/mono /usr/bin/mono 2>/dev/null || true
+
+          echo "Removing PHP..."
+          sudo rm -rf /usr/bin/php* /etc/php 2>/dev/null || true
+
+          echo "Cleaning apt cache..."
+          sudo apt-get clean -y 2>/dev/null || true
+          sudo rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+
+          echo "Cleaning Docker build cache..."
+          docker builder prune -af 2>/dev/null || true
+
+          echo "Cleaning temporary files..."
+          sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+
+          echo "=== Post-cleanup disk usage ==="
+          df -h /
+
+      - name: 'Measure Available Disk Space'
+        id: disk_space
+        run: |
+          FREE_KB=$(df --output=avail / | tail -1)
+          FREE_GB=$((FREE_KB / 1024 / 1024))
+          echo "free_gb=${FREE_GB}" >> $GITHUB_OUTPUT
+          echo "Available space: ${FREE_GB} GB"
+          # Fail fast if insufficient space (ISO build needs ~15GB minimum)
+          if [[ ${FREE_GB} -lt 15 ]]; then
+            echo "::error::Insufficient disk space: ${FREE_GB} GB available, 15 GB minimum required"
+            exit 1
+          fi
+
+      - name: 'Validate Profile Structure'
+        run: |
+          set -euo pipefail
+          PROFILE="${{ env.PROFILE_DIR }}"
+          echo "Validating profile directory: ${PROFILE}"
+
+          required_files=(
+            "profiledef.sh"
+            "packages.x86_64"
+            "pacman.conf"
+            "mkarchiso"
+            "run_before_squashfs.sh"
+            "prepare.sh"
+            "airootfs/etc/skel/.config/hypr/hyprland.conf"
+            "airootfs/etc/skel/.config/caelestia/shell.json"
+            "syslinux/archiso_sys-linux.cfg"
+            "efiboot/loader/entries/archiso-x86_64-linux.conf"
+          )
+
+          for f in "${required_files[@]}"; do
+            if [[ ! -f "${PROFILE}/${f}" ]]; then
+              echo "::error::Missing required file: ${PROFILE}/${f}"
+              exit 1
+            fi
+            echo "  ✓ ${f}"
+          done
+
+          # Verify mkarchiso is executable
+          if [[ ! -x "${PROFILE}/mkarchiso" ]]; then
+            echo "::error::mkarchiso is not executable"
+            exit 1
+          fi
+
+          # Verify prepare scripts are executable
+          for s in prepare.sh prepare_auto.sh run_before_squashfs.sh; do
+            if [[ ! -x "${PROFILE}/${s}" ]]; then
+              echo "::warning::${s} is not executable, fixing..."
+              chmod +x "${PROFILE}/${s}"
+            fi
+          done
+
+          echo "Profile structure validation passed."
+
+  # ================================================================
+  # BUILD: Compile ISO inside privileged Arch Linux container
+  # ================================================================
+  build-iso:
+    name: 'Build Zehra OS ISO'
+    runs-on: ubuntu-latest
+    needs: preflight
+    timeout-minutes: 120
+    # Use the preflight disk space info for logging
+    env:
+      PREFLIGHT_FREE_GB: ${{ needs.preflight.outputs.free_space_gb }}
+
+    steps:
+      - name: 'Checkout repository'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: 'Display Build Configuration'
+        run: |
+          echo "========================================"
+          echo "  Zehra OS ISO Build Configuration"
+          echo "========================================"
+          echo "Profile Directory: ${{ env.PROFILE_DIR }}"
+          echo "Docker Image: ${{ env.DOCKER_IMAGE }}"
+          echo "Container Work Dir: ${{ env.CONTAINER_WORK_DIR }}"
+          echo "Container Out Dir: ${{ env.CONTAINER_OUT_DIR }}"
+          echo "Build Mode: ${{ github.event.inputs.build_mode || 'iso' }}"
+          echo "Verbose Logging: ${{ github.event.inputs.verbose_logging || 'true' }}"
+          echo "Clean Workspace: ${{ github.event.inputs.clean_workspace || 'true' }}"
+          echo "Preflight Free Space: ${PREFLIGHT_FREE_GB} GB"
+          echo "Runner: ${RUNNER_OS} ${RUNNER_ARCH}"
+          echo "Git Ref: ${GITHUB_REF}"
+          echo "Git SHA: ${GITHUB_SHA}"
+          echo "========================================"
+
+      - name: 'Prepare Host Directories'
+        run: |
+          # Create clean host directories for Docker volume mounts
+          sudo mkdir -p "${{ env.CONTAINER_WORK_DIR }}" "${{ env.CONTAINER_OUT_DIR }}"
+          sudo chown -R runner:runner "${{ env.CONTAINER_WORK_DIR }}" "${{ env.CONTAINER_OUT_DIR }}"
+
+          # Clean work directory if requested
+          if [[ "${{ github.event.inputs.clean_workspace }}" == "true" ]]; then
+            echo "Cleaning work directory: ${{ env.CONTAINER_WORK_DIR }}"
+            sudo rm -rf "${{ env.CONTAINER_WORK_DIR }}"/* 2>/dev/null || true
+          fi
+
+          echo "Host directories prepared:"
+          ls -la "${{ env.CONTAINER_WORK_DIR }}" "${{ env.CONTAINER_OUT_DIR }}"
+
+      - name: 'Pull Base Docker Image'
+        run: |
+          echo "Pulling ${{ env.DOCKER_IMAGE }}..."
+          docker pull ${{ env.DOCKER_IMAGE }}
+          echo "Image pulled successfully."
+
+      - name: 'Execute ISO Build in Privileged Container'
+        # This runs the entire mkarchiso pipeline inside an isolated,
+        # privileged Arch Linux container. The profile directory is mounted
+        # read-only, output directory is mounted for artifact retrieval.
+        run: |
+          set -euo pipefail
+
+          VERBOSE_FLAG=""
+          if [[ "${{ github.event.inputs.verbose_logging }}" == "true" ]]; then
+            VERBOSE_FLAG="-v"
+          fi
+
+          BUILD_MODE="${{ github.event.inputs.build_mode || 'iso' }}"
+
+          echo "========================================"
+          echo "  Starting ISO Build in Container"
+          echo "========================================"
+          echo "Work Dir: ${{ env.CONTAINER_WORK_DIR }}"
+          echo "Out Dir: ${{ env.CONTAINER_OUT_DIR }}"
+          echo "Verbose: ${VERBOSE_FLAG}"
+          echo "Mode: ${BUILD_MODE}"
+          echo "========================================"
+
+          # The container runs as root (privileged) with the profile mounted at /repo
+          # and output at /repo/out (mapped to host ${{ env.CONTAINER_OUT_DIR }})
+          docker run \
+            --rm \
+            --privileged \
+            --volume "${{ github.workspace }}/${{ env.PROFILE_DIR }}:${{ env.REPO_MOUNT }}:ro" \
+            --volume "${{ env.CONTAINER_OUT_DIR }}:${{ env.REPO_MOUNT }}/out" \
+            --volume "${{ env.CONTAINER_WORK_DIR }}:${{ env.CONTAINER_WORK_DIR }}" \
+            --workdir "${{ env.REPO_MOUNT }}" \
+            --env MAKEFLAGS="${{ env.MAKEFLAGS }}" \
+            --env COMPRESSION_THREADS="${{ env.COMPRESSION_THREADS }}" \
+            --env SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(date +%s)}" \
+            ${{ env.DOCKER_IMAGE }} \
+            bash -c "
+              set -euo pipefail
+
+              echo '=== Container Environment ===' 
+              cat /etc/os-release
+              echo 'Kernel:' $(uname -r)
+              echo 'CPU cores:' $(nproc)
+              echo 'Memory:' $(free -h | grep Mem | awk '{print \$2}')
+              echo 'Disk:' $(df -h / | tail -1)
+              echo '================================='
+
+              echo '=== Installing Build Dependencies ==='
+              pacman -Sy --noconfirm --needed \
+                archlinux-keyring \
+                archiso \
+                git \
+                wget \
+                curl \
+                reflector \
+                rsync \
+                imagemagick \
+                base-devel \
+                squashfs-tools \
+                cpio \
+                dosfstools \
+                e2fsprogs \
+                libisoburn \
+                mtools \
+                syslinux \
+                edk2-shell \
+                gnupg \
+                pacman-contrib
+              echo '=== Dependencies Installed ==='
+
+              echo '=== Initializing Pacman Keyring ==='
+              pacman-key --init
+              pacman-key --populate archlinux
+              # EndeavourOS keyring will be populated by run_before_squashfs.sh inside chroot
+
+              echo '=== Running Prepare Hooks ==='
+              # Run prepare.sh to: add date to wallpaper, fetch Zehra wallpaper,
+              # build liveuser skel package, fetch ryoku-orbital-clock-lockscreen
+              if [[ -x ./prepare.sh ]]; then
+                ./prepare.sh
+              else
+                echo 'ERROR: prepare.sh not found or not executable'
+                exit 1
+              fi
+
+              echo '=== Running Auto Prepare Hooks ==='
+              # Run prepare_auto.sh for additional setup
+              if [[ -x ./prepare_auto.sh ]]; then
+                ./prepare_auto.sh
+              else
+                echo 'WARNING: prepare_auto.sh not found, skipping'
+              fi
+
+              echo '=== Starting mkarchiso Build ==='
+              echo 'Profile: .'
+              echo 'Work dir: ${{ env.CONTAINER_WORK_DIR }}'
+              echo 'Out dir: ${{ env.REPO_MOUNT }}/out'
+              echo 'Verbose: ${VERBOSE_FLAG}'
+
+              # Execute the custom mkarchiso (modified for Zehra OS)
+              # This script sources profiledef.sh and runs the full build pipeline:
+              # 1. Creates bootstrap chroot
+              # 2. Installs packages from packages.x86_64
+              # 3. Applies airootfs overlay
+              # 4. Runs run_before_squashfs.sh (chroot operations)
+              # 5. Creates squashfs
+              # 6. Generates ISO with syslinux + systemd-boot
+              ./mkarchiso ${VERBOSE_FLAG} -w \"${{ env.CONTAINER_WORK_DIR }}\" -o \"${{ env.REPO_MOUNT }}/out\" .
+
+              echo '=== Build Completed Successfully ==='
+            "
+
+      - name: 'Verify Build Output'
+        run: |
+          echo "=== Verifying Build Output ==="
+          OUT_DIR="${{ env.CONTAINER_OUT_DIR }}"
+          echo "Output directory contents:"
+          ls -lh "${OUT_DIR}"/
+
+          # Find the ISO file
+          ISO_FILE=$(find "${OUT_DIR}" -maxdepth 1 -name '*.iso' -type f | head -1)
+          if [[ -z "${ISO_FILE}" ]]; then
+            echo "::error::No ISO file found in output directory!"
+            exit 1
+          fi
+
+          ISO_SIZE=$(stat -c%s "${ISO_FILE}")
+          ISO_SIZE_MB=$((ISO_SIZE / 1024 / 1024))
+          ISO_NAME=$(basename "${ISO_FILE}")
+
+          echo "Found ISO: ${ISO_NAME}"
+          echo "Size: ${ISO_SIZE_MB} MB (${ISO_SIZE} bytes)"
+
+          # Verify ISO is valid (basic check)
+          if [[ ${ISO_SIZE} -lt 100000000 ]]; then
+            echo "::warning::ISO file seems small (${ISO_SIZE_MB} MB), may be incomplete"
+          fi
+
+          # Export for artifact upload
+          echo "iso_path=${ISO_FILE}" >> $GITHUB_OUTPUT
+          echo "iso_name=${ISO_NAME}" >> $GITHUB_OUTPUT
+          echo "iso_size_mb=${ISO_SIZE_MB}" >> $GITHUB_OUTPUT
+
+          # Verify checksums
+          echo "=== Generating Checksums ==="
+          cd "${OUT_DIR}"
+          sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256"
+          sha512sum "${ISO_NAME}" > "${ISO_NAME}.sha512"
+          cat "${ISO_NAME}.sha256"
+          cat "${ISO_NAME}.sha512"
+
+  # ================================================================
+  # ARTIFACT: Upload ISO with metadata
+  # ================================================================
+  upload-artifact:
+    name: 'Upload ISO Artifact'
+    runs-on: ubuntu-latest
+    needs: build-iso
+    timeout-minutes: 15
+    steps:
+      - name: 'Download Build Output'
+        # The build job output is on the runner's filesystem at ${{ env.CONTAINER_OUT_DIR }}
+        # We need to copy it to the workflow workspace for upload
+        run: |
+          OUT_DIR="${{ env.CONTAINER_OUT_DIR }}"
+          ISO_FILE="${{ needs.build-iso.outputs.iso_path }}"
+          ISO_NAME="${{ needs.build-iso.outputs.iso_name }}"
+
+          echo "Copying ISO from container output to workspace..."
+          mkdir -p ./artifact
+          cp "${ISO_FILE}" "./artifact/${ISO_NAME}"
+          cp "${ISO_FILE}.sha256" "./artifact/${ISO_NAME}.sha256" 2>/dev/null || true
+          cp "${ISO_FILE}.sha512" "./artifact/${ISO_NAME}.sha512" 2>/dev/null || true
+
+          echo "Artifact directory contents:"
+          ls -lh ./artifact/
+
+      - name: 'Upload Zehra OS Live Installer ISO'
+        uses: actions/upload-artifact@v4
+        with:
+          name: 'ZehraOS-Live-Installer'
+          path: |
+            ./artifact/*.iso
+            ./artifact/*.sha256
+            ./artifact/*.sha512
+          retention-days: 5
+          compression-level: 6
+          if-no-files-found: error
+
+      - name: 'Display Artifact Summary'
+        run: |
+          ISO_NAME="${{ needs.build-iso.outputs.iso_name }}"
+          ISO_SIZE_MB="${{ needs.build-iso.outputs.iso_size_mb }}"
+          echo "========================================"
+          echo "  Zehra OS ISO Build Complete"
+          echo "========================================"
+          echo "Artifact Name: ZehraOS-Live-Installer"
+          echo "ISO File: ${ISO_NAME}"
+          echo "ISO Size: ${ISO_SIZE_MB} MB"
+          echo "Retention: 5 days"
+          echo "Download: Available from Actions > Artifacts"
+          echo "========================================"
+          echo ""
+          echo "To verify integrity after download:"
+          echo "  sha256sum -c ${ISO_NAME}.sha256"
+          echo "  sha512sum -c ${ISO_NAME}.sha512"
+          echo ""
+
+  # ================================================================
+  # POST-BUILD: Cleanup & Notifications
+  # ================================================================
+  post-build:
+    name: 'Post-Build Cleanup'
+    runs-on: ubuntu-latest
+    needs: [build-iso, upload-artifact]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: 'Clean Container Work Directory'
+        run: |
+          echo "Cleaning up container work directory..."
+          sudo rm -rf "${{ env.CONTAINER_WORK_DIR }}"/* 2>/dev/null || true
+          sudo rm -rf "${{ env.CONTAINER_OUT_DIR }}"/* 2>/dev/null || true
+          echo "Cleanup complete."
+
+      - name: 'Display Final Status'
+        run: |
+          BUILD_RESULT="${{ needs.build-iso.result }}"
+          UPLOAD_RESULT="${{ needs.upload-artifact.result }}"
+
+          echo "========================================"
+          echo "  Zehra OS Build Pipeline Summary"
+          echo "========================================"
+          echo "Build Job:     ${BUILD_RESULT}"
+          echo "Upload Job:    ${UPLOAD_RESULT}"
+          echo "Git Ref:       ${GITHUB_REF}"
+          echo "Git SHA:       ${GITHUB_SHA}"
+          echo "Triggered By:  ${GITHUB_ACTOR}"
+          echo "Workflow Run:  ${GITHUB_RUN_ID}"
+          echo "========================================"
+
+          if [[ "${BUILD_RESULT}" != "success" ]]; then
+            echo "::warning::Build job did not succeed - check logs above"
+            exit 1
+          fi
+
+          if [[ "${UPLOAD_RESULT}" != "success" ]]; then
+            echo "::warning::Artifact upload did not succeed"
+            exit 1
+          fi
+
+          echo "All stages completed successfully!"
